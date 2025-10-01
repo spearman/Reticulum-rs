@@ -58,6 +58,10 @@ name = "udp-link"
 path = "examples/udp_link.rs"
 
 [[example]]
+name = "udp-channel"
+path = "examples/udp_channel.rs"
+
+[[example]]
 name = "link-client"
 path = "examples/link_client.rs"
 
