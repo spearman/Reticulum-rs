@@ -7,5 +7,8 @@ set -x
 rustup target add armv7-unknown-linux-gnueabihf
 cargo build
 cargo build --example udp-link
+cargo build --example kaonic-client
+cargo build --example kaonic-mesh
+cargo build --example kaonic-tcp-mesh
 
 exit 0
