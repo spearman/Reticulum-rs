@@ -18,6 +18,7 @@ pub struct LinkEntry {
 }
 
 fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
+    /*FIXME:debug*/ log::warn!("SEND BACKWARDS");
     let propagated = Packet {
         header: Header {
             ifac_flag: IfacFlag::Authenticated,

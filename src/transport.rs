@@ -656,6 +656,7 @@ async fn send_to_next_hop<'a>(
     );
 
     if let Some(iface) = maybe_iface {
+        /*FIXME:debug*/ log::warn!("SEND TO NEXT HOP");
         handler.send(TxMessage {
             tx_type: TxMessageType::Direct(iface),
             packet,
