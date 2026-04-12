@@ -21,12 +21,10 @@ fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
     /*FIXME:debug*/ log::warn!("SEND BACKWARDS");
     let propagated = Packet {
         header: Header {
-            ifac_flag: IfacFlag::Authenticated,
+            ifac_flag: IfacFlag::Open,
             header_type: HeaderType::Type2,
-            propagation_type: packet.header.propagation_type,
-            destination_type: packet.header.destination_type,
-            packet_type: packet.header.packet_type,
             hops: packet.header.hops + 1,
+            .. packet.header
         },
         ifac: None,
         destination: packet.destination,
