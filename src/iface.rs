@@ -185,6 +185,7 @@ impl InterfaceManager {
                 TxMessageType::Broadcast(address) => {
                     let mut should_send = true;
                     if let Some(address) = address {
+                        /*FIXME:debug*/ log::warn!("BROADCAST {} ON {}?", address, iface.address);
                         should_send = address != iface.address;
                     }
 
