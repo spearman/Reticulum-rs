@@ -557,8 +557,7 @@ impl TransportHandler {
     }
 
     async fn send(&self, message: TxMessage) {
-        /*FIXME:debug*/ println!("OUTPUT >>>>>>>>>>>>>>>>>>>>>>>");
-        /*FIXME:debug*/ crate::utils::show_packet(&message.packet);
+        /*FIXME:debug*/ log::debug!("OUTPUT >>>>>>>>>>>>>>>>>>>>>>>\n{}", crate::utils::show_packet(&message.packet));
         self.packet_cache.lock().await.update(&message.packet);
         self.iface_manager.lock().await.send(message).await;
     }
@@ -1180,8 +1179,7 @@ async fn manage_transport(
                         let _ = iface_messages_tx.send(message);
 
                         let packet = message.packet;
-                        /*FIXME:debug*/ println!("INPUT <<<<<<<<<<<<<<<<<<<<<<<<");
-                        /*FIXME:debug*/ crate::utils::show_packet(&packet);
+                        /*FIXME:debug*/ log::debug!("INPUT <<<<<<<<<<<<<<<<<<<<<<<<\n{}", crate::utils::show_packet(&packet));
 
                         let mut handler = handler.lock().await;
 
