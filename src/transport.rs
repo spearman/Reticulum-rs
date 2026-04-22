@@ -732,6 +732,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     let mut data_handled = false;
 
     if packet.header.destination_type == DestinationType::Link {
+        let mut local_out_link_handled = false;
+
         if let Some(link) = handler.in_links.get(&packet.destination).cloned() {
             let mut link = link.lock().await;
             let result = link.handle_packet(packet, false);
@@ -749,28 +751,33 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
 
         for link in handler.out_links.values() {
             let mut link = link.lock().await;
-            let _ = link.handle_packet(packet, true);
-            data_handled = true;
+            if link.id() == &packet.destination {
+                let _ = link.handle_packet(packet, true);
+                local_out_link_handled = true;
+                data_handled = true;
+            }
         }
 
-        if handle_keepalive_response(packet, &handler).await {
+        if !local_out_link_handled && handle_keepalive_response(packet, &handler).await {
             return;
         }
 
-        let lookup = handler.link_table.original_destination(&packet.destination);
-        if lookup.is_some() {
-            let sent = send_to_next_hop(packet, &handler, lookup).await;
+        if !local_out_link_handled {
+            let lookup = handler.link_table.original_destination(&packet.destination);
+            if lookup.is_some() {
+                let sent = send_to_next_hop(packet, &handler, lookup).await;
 
-            log::trace!(
-                "tp({}): {} packet to remote link {}",
-                handler.config.name,
-                if sent {
-                    "forwarded"
-                } else {
-                    "could not forward"
-                },
-                packet.destination
-            );
+                log::trace!(
+                    "tp({}): {} packet to remote link {}",
+                    handler.config.name,
+                    if sent {
+                        "forwarded"
+                    } else {
+                        "could not forward"
+                    },
+                    packet.destination
+                );
+            }
         }
     }
 
