@@ -378,13 +378,14 @@ impl Transport {
         let mut sent_packets = vec![];
         let handler = self.handler.lock().await;
         for link in handler.out_links.values() {
-            let link = link.lock().await;
+            let mut link = link.lock().await;
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
             {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
+                    link.touch();
                     sent_packets.push(packet.hash());
                 }
             }
@@ -405,7 +406,7 @@ impl Transport {
         let handler = self.handler.lock().await;
         let mut count = 0usize;
         for link in handler.in_links.values() {
-            let link = link.lock().await;
+            let mut link = link.lock().await;
 
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
@@ -413,6 +414,7 @@ impl Transport {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
+                    link.touch();
                     count += 1;
                 }
             }
