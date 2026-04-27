@@ -187,28 +187,38 @@ impl TransportConfig {
         }
     }
 
-    pub fn set_retransmit(&mut self, retransmit: bool) {
+    pub fn set_retransmit(mut self, retransmit: bool) -> Self {
         self.retransmit = retransmit;
+        self
     }
 
-    pub fn set_broadcast(&mut self, broadcast: bool) {
+    pub fn set_broadcast(mut self, broadcast: bool) -> Self {
         self.broadcast = broadcast;
+        self
     }
 
-    pub fn set_reroute_eager(&mut self, reroute_eager: bool) {
+    pub fn set_reroute_eager(mut self, reroute_eager: bool) -> Self {
         self.reroute_eager = reroute_eager;
+        self
     }
 
-    pub fn set_restart_outlinks(&mut self, restart_outlinks: bool) {
+    pub fn set_restart_outlinks(mut self, restart_outlinks: bool) -> Self {
         self.restart_outlinks = restart_outlinks;
+        self
     }
 
-    pub fn set_announce_forever(&mut self, announce_forever: bool) {
+    pub fn set_announce_forever(mut self, announce_forever: bool) -> Self {
         self.announce_forever = announce_forever;
+        self
     }
 
-    pub fn set_timer_config(&mut self, timer_config: TimerConfig) {
+    pub fn set_timer_config(mut self, timer_config: TimerConfig) -> Self {
         self.timer_config = timer_config;
+        self
+    }
+
+    pub fn build(self) -> Transport {
+        Transport::new(self)
     }
 }
 
