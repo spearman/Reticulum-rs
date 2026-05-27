@@ -460,13 +460,15 @@ impl Link {
     }
 
     pub fn encrypt<'a>(&self, text: &[u8], out_buf: &'a mut [u8]) -> Result<&'a [u8], RnsError> {
-        self.priv_identity
-            .encrypt(OsRng, text, &self.derived_key, out_buf)
+        // DEBUG: testing with encryption disabled
+        out_buf[..text.len()].copy_from_slice(text);
+        Ok(&out_buf[..text.len()])
     }
 
     pub fn decrypt<'a>(&self, text: &[u8], out_buf: &'a mut [u8]) -> Result<&'a [u8], RnsError> {
-        self.priv_identity
-            .decrypt(OsRng, text, &self.derived_key, out_buf)
+        // DEBUG: testing with encryption disabled
+        out_buf[..text.len()].copy_from_slice(text);
+        Ok(&out_buf[..text.len()])
     }
 
     pub fn destination(&self) -> &DestinationDesc {
