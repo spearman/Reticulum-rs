@@ -1088,20 +1088,26 @@ async fn handle_link_request_as_destination<'a>(
                     destination.desc,
                 );
 
-                if let Ok(mut link) = link {
-                    handler.send_packet(link.prove(&handler.link_in_event_tx)).await;
+                match link {
+                    Ok(mut link) => {
+                        handler.send_packet(link.prove(&handler.link_in_event_tx)).await;
 
-                    log::debug!(
-                        "tp({}): save input link {} for destination {}",
-                        handler.config.name,
-                        link.id(),
-                        link.destination().address_hash
-                    );
+                        log::debug!(
+                            "tp({}): save input link {} for destination {}",
+                            handler.config.name,
+                            link.id(),
+                            link.destination().address_hash
+                        );
 
-                    handler
-                        .in_links
-                        .insert(*link.id(), Arc::new(Mutex::new(link)));
+                        handler
+                            .in_links
+                            .insert(*link.id(), Arc::new(Mutex::new(link)));
+                    }
+                    Err(err) => log::warn!("error creating link from request: {err:?}")
                 }
+            } else {
+                /*FIXME:debug*/
+                log::warn!("got link request for existing link: {link_id}");
             }
         }
         DestinationHandleStatus::None => {}
