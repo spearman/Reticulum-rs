@@ -481,7 +481,7 @@ impl Link {
         out_link: bool
     ) -> LinkHandleResult {
         if self.status != LinkStatus::Active {
-            log::warn!("link({}): handling data packet in inactive state", self.id);
+            log::warn!("link({}): handling data packet with context {:?} in inactive state", self.id, packet.context);
         }
 
         match packet.context {
