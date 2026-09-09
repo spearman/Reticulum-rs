@@ -451,6 +451,14 @@ impl Transport {
         self.handler.lock().await.find_in_link(link_id)
     }
 
+    pub async fn out_link_destinations(&self) -> Vec<AddressHash> {
+        self.handler.lock().await.out_link_destinations()
+    }
+
+    pub async fn in_link_ids(&self) -> Vec<LinkId> {
+        self.handler.lock().await.in_link_ids()
+    }
+
     pub async fn link(&self, destination: DestinationDesc) -> Arc<Mutex<Link>> {
         let link = self
             .handler
@@ -645,6 +653,14 @@ impl TransportHandler {
 
     fn find_in_link(&self, link_id: &AddressHash) -> Option<Arc<Mutex<Link>>> {
         self.in_links.get(link_id).cloned()
+    }
+
+    fn out_link_destinations(&self) -> Vec<AddressHash> {
+        self.out_links.keys().cloned().collect()
+    }
+
+    fn in_link_ids(&self) -> Vec<LinkId> {
+        self.in_links.keys().cloned().collect()
     }
 
     pub(crate) async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
