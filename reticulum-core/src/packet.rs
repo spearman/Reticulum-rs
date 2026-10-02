@@ -7,6 +7,10 @@ use crate::hash::AddressHash;
 use crate::hash::Hash;
 
 pub const PACKET_MDU: usize = 2048usize;
+
+/// Maximum plain text length of a single encrypted packet, the same as
+/// `RNS.Packet.ENCRYPTED_MDU` in the Python reference implementation.
+pub const ENCRYPTED_MDU: usize = 383usize;
 pub const PACKET_IFAC_MAX_LENGTH: usize = 64usize;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]

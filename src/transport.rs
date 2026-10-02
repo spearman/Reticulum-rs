@@ -12,12 +12,13 @@ use crate::channel::{self, Channel};
 use crate::destination::link::{Link, LinkEventData, LinkEventSink, LinkExt, LinkExtHandlePacket,
     LinkHandleResult, LinkId, LinkPayload, LinkPayloadSink, LinkStatus};
 use crate::destination::{DestinationAnnounce, DestinationDesc, DestinationHandleStatus,
-    DestinationName, SingleInputDestination, SingleOutputDestination};
+    DestinationName, GroupInputDestination, SingleInputDestination, SingleOutputDestination};
 use crate::error::RnsError;
 use crate::hash::{AddressHash, Hash};
-use crate::identity::PrivateIdentity;
+use crate::identity::{GroupIdentity, PrivateIdentity};
 use crate::iface::{InterfaceManager, InterfaceRxReceiver, RxMessage, TxMessage, TxMessageType};
-use crate::packet::{DestinationType, Packet, PacketContext, PacketDataBuffer, PacketType};
+use crate::packet::{DestinationType, Packet, PacketContext, PacketDataBuffer, PacketType,
+    PACKET_MDU};
 
 mod announce_limits;
 mod announce_table;
@@ -151,6 +152,7 @@ pub(crate) struct TransportHandler {
     link_table: LinkTable,
     single_in_destinations: HashMap<AddressHash, Arc<Mutex<SingleInputDestination>>>,
     single_out_destinations: HashMap<AddressHash, Arc<Mutex<SingleOutputDestination>>>,
+    group_in_destinations: HashMap<AddressHash, Arc<Mutex<GroupInputDestination>>>,
 
     announce_limits: AnnounceLimits,
 
@@ -273,6 +275,7 @@ impl Transport {
             path_table: PathTable::new(reroute_eager),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
+            group_in_destinations: HashMap::new(),
             announce_limits: AnnounceLimits::new(),
             out_links: HashMap::new(),
             in_links: HashMap::new(),
@@ -567,6 +570,27 @@ impl Transport {
             .lock()
             .await
             .single_in_destinations
+            .insert(address_hash, destination.clone());
+
+        destination
+    }
+
+    pub async fn add_group_destination(
+        &mut self,
+        identity: GroupIdentity,
+        name: DestinationName,
+    ) -> Arc<Mutex<GroupInputDestination>> {
+        let destination = GroupInputDestination::new(identity, name);
+        let address_hash = destination.desc.address_hash;
+
+        log::debug!("tp({}): add group destination {}", self.name, address_hash);
+
+        let destination = Arc::new(Mutex::new(destination));
+
+        self.handler
+            .lock()
+            .await
+            .group_in_destinations
             .insert(address_hash, destination.clone());
 
         destination
@@ -904,6 +928,48 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
         }
     }
 
+    if packet.header.destination_type == DestinationType::Group {
+        // GROUP packets are never transported, so only packets received
+        // directly from the sender are accepted
+        if packet.header.hops > 0 {
+            log::debug!(
+                "tp({}): dropped GROUP packet {} with {} hops",
+                handler.config.name,
+                packet.hash(),
+                packet.header.hops
+            );
+            return;
+        }
+
+        if let Some(destination) = handler
+            .group_in_destinations
+            .get(&packet.destination)
+            .cloned()
+        {
+            data_handled = true;
+
+            let mut buffer = [0u8; PACKET_MDU];
+            match destination
+                .lock()
+                .await
+                .decrypt(OsRng, packet.data.as_slice(), &mut buffer)
+            {
+                Ok(plain_text) => {
+                    handler.received_data_tx.send(ReceivedData {
+                        destination: packet.destination,
+                        data: PacketDataBuffer::new_from_slice(plain_text),
+                    }).ok();
+                }
+                Err(err) => log::error!(
+                    "tp({}): the GROUP destination {} could not decrypt data: {:?}",
+                    handler.config.name,
+                    packet.destination,
+                    err
+                ),
+            }
+        }
+    }
+
     if data_handled {
         log::trace!(
             "tp({}): handle data request for {} dst={:2x} ctx={:2x}",
@@ -920,6 +986,19 @@ async fn handle_announce<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
     iface: AddressHash,
 ) {
+    // PLAIN and GROUP destinations can not be announced
+    if packet.header.destination_type == DestinationType::Plain
+        || packet.header.destination_type == DestinationType::Group
+    {
+        log::debug!(
+            "tp({}): dropped invalid {:?} announce for {}",
+            handler.config.name,
+            packet.header.destination_type,
+            packet.destination
+        );
+        return;
+    }
+
     if handler.has_destination(&packet.destination) {
         // destination is local
         return;
@@ -1518,6 +1597,7 @@ async fn manage_transport(
 mod tests {
     use super::*;
 
+    use crate::crypt::GroupKey;
     use crate::packet::HeaderType;
 
     #[tokio::test]
@@ -1600,5 +1680,73 @@ mod tests {
                 .filter_duplicate_packets(&duplicate)
                 .await
         );
+    }
+
+    fn group_identity(key: GroupKey) -> GroupIdentity {
+        let identity = PrivateIdentity::new_from_name("group");
+        GroupIdentity::new(*identity.as_identity(), key)
+    }
+
+    #[tokio::test]
+    async fn group_data_delivery() {
+        let mut transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let mut received_data = transport.received_data_events();
+
+        let key = GroupKey::new_rand(OsRng);
+        let name = DestinationName::new("example", "group");
+
+        let destination = transport
+            .add_group_destination(group_identity(key.clone()), name)
+            .await;
+        let address = destination.lock().await.desc.address_hash;
+
+        // Packet from another member, received directly
+        let sender = GroupInputDestination::new(group_identity(key), name);
+        let packet = sender.data_packet(OsRng, b"hello group").unwrap();
+
+        handle_data(&packet, handler.lock().await).await;
+
+        let data = received_data.try_recv().expect("delivered group data");
+        assert_eq!(data.destination, address);
+        assert_eq!(data.data.as_slice(), b"hello group");
+
+        // GROUP packets are never transported
+        let mut transported = sender.data_packet(OsRng, b"transported").unwrap();
+        transported.header.hops = 1;
+
+        handle_data(&transported, handler.lock().await).await;
+        assert!(received_data.try_recv().is_err());
+
+        // Packets encrypted with another key are not delivered
+        let other_sender =
+            GroupInputDestination::new(group_identity(GroupKey::new_rand(OsRng)), name);
+        let packet = other_sender.data_packet(OsRng, b"wrong key").unwrap();
+
+        handle_data(&packet, handler.lock().await).await;
+        assert!(received_data.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn drop_group_announces() {
+        let transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let iface = AddressHash::new_from_slice(&[1u8; 32]);
+
+        let destination = SingleInputDestination::new(
+            PrivateIdentity::new_from_rand(OsRng),
+            DestinationName::new("example", "group"),
+        );
+
+        let mut announce = destination.announce(OsRng, None).unwrap();
+        announce.header.destination_type = DestinationType::Group;
+
+        handle_announce(&announce, handler.lock().await, iface).await;
+        assert!(!transport.knows_destination(&destination.desc.address_hash).await);
+
+        announce.header.destination_type = DestinationType::Single;
+
+        handle_announce(&announce, handler.lock().await, iface).await;
+        assert!(transport.knows_destination(&destination.desc.address_hash).await);
     }
 }

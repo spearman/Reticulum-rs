@@ -10,10 +10,12 @@ use core::{fmt, marker::PhantomData};
 use crate::{
     error::RnsError,
     hash::{AddressHash, Hash},
-    identity::{EmptyIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH},
+    identity::{
+        EmptyIdentity, GroupIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH,
+    },
     packet::{
         self, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
-        PacketDataBuffer, PacketType, PropagationType,
+        PacketDataBuffer, PacketType, PropagationType, ENCRYPTED_MDU, PACKET_MDU,
     },
     time::unix_time_as_secs,
 };
@@ -355,6 +357,72 @@ impl<D: Direction> Destination<EmptyIdentity, D, Plain> {
     }
 }
 
+impl Destination<GroupIdentity, Input, Group> {
+    pub fn new(identity: GroupIdentity, name: DestinationName) -> Self {
+        let address_hash = create_address_hash(&identity, &name);
+        let pub_identity = *identity.as_identity();
+
+        Self {
+            direction: PhantomData,
+            r#type: PhantomData,
+            identity,
+            desc: DestinationDesc {
+                identity: pub_identity,
+                name,
+                address_hash,
+            },
+        }
+    }
+
+    pub fn encrypt<'a, R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        text: &[u8],
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        self.identity.key().encrypt(rng, text, out_buf)
+    }
+
+    pub fn decrypt<'a, R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        data: &[u8],
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        self.identity.key().decrypt(rng, data, out_buf)
+    }
+
+    /// Creates an encrypted data packet for all members of the group.
+    pub fn data_packet<R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        data: &[u8],
+    ) -> Result<Packet, RnsError> {
+        if data.len() > ENCRYPTED_MDU {
+            return Err(RnsError::OutOfMemory);
+        }
+
+        let mut buffer = [0u8; PACKET_MDU];
+        let token = self.encrypt(rng, data, &mut buffer)?;
+
+        Ok(Packet {
+            header: Header {
+                ifac_flag: IfacFlag::Open,
+                header_type: HeaderType::Type1,
+                propagation_type: PropagationType::Broadcast,
+                destination_type: DestinationType::Group,
+                packet_type: PacketType::Data,
+                hops: 0,
+            },
+            ifac: None,
+            destination: self.desc.address_hash,
+            transport: None,
+            context: PacketContext::None,
+            data: PacketDataBuffer::new_from_slice(token),
+        })
+    }
+}
+
 fn create_address_hash<I: HashIdentity>(identity: &I, name: &DestinationName) -> AddressHash {
     AddressHash::new_from_hash(&Hash::new(
         Hash::generator()
@@ -369,6 +437,7 @@ pub type SingleInputDestination = Destination<PrivateIdentity, Input, Single>;
 pub type SingleOutputDestination = Destination<Identity, Output, Single>;
 pub type PlainInputDestination = Destination<EmptyIdentity, Input, Plain>;
 pub type PlainOutputDestination = Destination<EmptyIdentity, Output, Plain>;
+pub type GroupInputDestination = Destination<GroupIdentity, Input, Group>;
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
@@ -381,8 +450,18 @@ mod tests {
 
     use std::println;
 
+    use crate::crypt::GroupKey;
+    use crate::error::RnsError;
+    use crate::hash::AddressHash;
+    use crate::identity::GroupIdentity;
+    use crate::packet::{
+        DestinationType, HeaderType, PacketContext, PacketType, PropagationType, ENCRYPTED_MDU,
+        PACKET_MDU,
+    };
+
     use super::DestinationAnnounce;
     use super::DestinationName;
+    use super::GroupInputDestination;
     use super::SingleInputDestination;
 
     #[test]
@@ -462,5 +541,69 @@ mod tests {
             .expect("valid announce packet");
 
         DestinationAnnounce::validate(&announce).expect("valid announce");
+    }
+
+    fn group_destination(key: GroupKey) -> GroupInputDestination {
+        // Identity with private key bytes(range(64)), as in the Python reference
+        let identity_hex: std::string::String = (0u8..64).map(|i| std::format!("{:02x}", i)).collect();
+        let identity = PrivateIdentity::new_from_hex_string(&identity_hex).expect("valid identity");
+
+        GroupInputDestination::new(
+            GroupIdentity::new(*identity.as_identity(), key),
+            DestinationName::new("example_utilities", "group.default"),
+        )
+    }
+
+    #[test]
+    fn group_address_matches_python() {
+        let destination = group_destination(GroupKey::new_rand(OsRng));
+
+        // RNS.Destination.hash(RNS.Identity.from_bytes(bytes(range(64))),
+        //                      "example_utilities", "group", "default")
+        assert_eq!(
+            destination.desc.address_hash,
+            AddressHash::new_from_hex_string("cac32abefbf58ab5878d9fc2d842a40e").unwrap()
+        );
+    }
+
+    #[test]
+    fn group_data_packet() {
+        let destination = group_destination(GroupKey::new_rand(OsRng));
+
+        let packet = destination
+            .data_packet(OsRng, b"group message")
+            .expect("valid data packet");
+
+        assert_eq!(packet.header.header_type, HeaderType::Type1);
+        assert_eq!(packet.header.propagation_type, PropagationType::Broadcast);
+        assert_eq!(packet.header.destination_type, DestinationType::Group);
+        assert_eq!(packet.header.packet_type, PacketType::Data);
+        assert_eq!(packet.header.hops, 0);
+        assert_eq!(packet.destination, destination.desc.address_hash);
+        assert_eq!(packet.context, PacketContext::None);
+
+        let mut buffer = [0u8; PACKET_MDU];
+        assert_eq!(
+            destination
+                .decrypt(OsRng, packet.data.as_slice(), &mut buffer)
+                .expect("plain text"),
+            b"group message"
+        );
+
+        let other_destination = group_destination(GroupKey::new_rand(OsRng));
+        assert!(other_destination
+            .decrypt(OsRng, packet.data.as_slice(), &mut buffer)
+            .is_err());
+    }
+
+    #[test]
+    fn group_data_packet_size_limit() {
+        let destination = group_destination(GroupKey::new_rand(OsRng));
+
+        assert!(destination.data_packet(OsRng, &[0u8; ENCRYPTED_MDU]).is_ok());
+        assert_eq!(
+            destination.data_packet(OsRng, &[0u8; ENCRYPTED_MDU + 1]).err(),
+            Some(RnsError::OutOfMemory)
+        );
     }
 }
