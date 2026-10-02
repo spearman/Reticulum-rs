@@ -10,10 +10,12 @@ use core::{fmt, marker::PhantomData};
 use crate::{
     error::RnsError,
     hash::{AddressHash, Hash},
-    identity::{EmptyIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH},
+    identity::{
+        EmptyIdentity, GroupIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH,
+    },
     packet::{
         self, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
-        PacketDataBuffer, PacketType, PropagationType,
+        PacketDataBuffer, PacketType, PropagationType, PACKET_MDU,
     },
     time::unix_time_as_secs,
 };
@@ -355,6 +357,65 @@ impl<D: Direction> Destination<EmptyIdentity, D, Plain> {
     }
 }
 
+impl Destination<GroupIdentity, Input, Group> {
+    pub fn new(identity: GroupIdentity, name: DestinationName) -> Self {
+        let address_hash = create_address_hash(&identity, &name);
+        let desc = {
+            let identity = *identity.as_identity();
+            DestinationDesc { identity, name, address_hash }
+        };
+        Self {
+            direction: PhantomData,
+            r#type: PhantomData,
+            identity,
+            desc
+        }
+    }
+
+    pub fn encrypt<'a, R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        text: &[u8],
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        self.identity.key().encrypt(rng, text, out_buf)
+    }
+
+    pub fn decrypt<'a, R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        data: &[u8],
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        self.identity.key().decrypt(rng, data, out_buf)
+    }
+
+    pub fn data_packet<R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        data: &[u8],
+    ) -> Result<Packet, RnsError> {
+        let mut buffer = [0u8; PACKET_MDU];
+        let token = self.encrypt(rng, data, &mut buffer)?;
+
+        Ok(Packet {
+            header: Header {
+                ifac_flag: IfacFlag::Open,
+                header_type: HeaderType::Type1,
+                propagation_type: PropagationType::Broadcast,
+                destination_type: DestinationType::Group,
+                packet_type: PacketType::Data,
+                hops: 0,
+            },
+            ifac: None,
+            destination: self.desc.address_hash,
+            transport: None,
+            context: PacketContext::None,
+            data: PacketDataBuffer::new_from_slice(token),
+        })
+    }
+}
+
 fn create_address_hash<I: HashIdentity>(identity: &I, name: &DestinationName) -> AddressHash {
     AddressHash::new_from_hash(&Hash::new(
         Hash::generator()
@@ -369,21 +430,24 @@ pub type SingleInputDestination = Destination<PrivateIdentity, Input, Single>;
 pub type SingleOutputDestination = Destination<Identity, Output, Single>;
 pub type PlainInputDestination = Destination<EmptyIdentity, Input, Plain>;
 pub type PlainOutputDestination = Destination<EmptyIdentity, Output, Plain>;
+pub type GroupInputDestination = Destination<GroupIdentity, Input, Group>;
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use rand_core::OsRng;
-
-    use crate::buffer::OutputBuffer;
-    use crate::hash::Hash;
-    use crate::identity::PrivateIdentity;
-    use crate::serde::Serialize;
 
     use std::println;
 
-    use super::DestinationAnnounce;
-    use super::DestinationName;
-    use super::SingleInputDestination;
+    use rand_core::OsRng;
+
+    use crate::buffer::OutputBuffer;
+    use crate::crypt::GroupKey;
+    use crate::hash::{AddressHash, Hash};
+    use crate::identity::{PrivateIdentity, GroupIdentity};
+    use crate::serde::Serialize;
+
+    use super::{
+        DestinationAnnounce, DestinationName, GroupInputDestination, SingleInputDestination
+    };
 
     #[test]
     fn create_announce() {
@@ -462,5 +526,25 @@ mod tests {
             .expect("valid announce packet");
 
         DestinationAnnounce::validate(&announce).expect("valid announce");
+    }
+
+    fn group_destination(key: GroupKey) -> GroupInputDestination {
+        // Identity with private key bytes(range(64)), as in the Python reference
+        let identity_hex: std::string::String = (0u8..64).map(|i| std::format!("{:02x}", i)).collect();
+        let identity = PrivateIdentity::new_from_hex_string(&identity_hex).expect("valid identity");
+        GroupInputDestination::new(
+            GroupIdentity::new(*identity.as_identity(), key),
+            DestinationName::new("example_utilities", "group.default"),
+        )
+    }
+
+    #[test]
+    fn group_address_matches_python() {
+        let destination = group_destination(GroupKey::new_rand(OsRng));
+        // RNS.Destination.hash(RNS.Identity.from_bytes(bytes(range(64))), "example_utilities", "group", "default")
+        assert_eq!(
+            destination.desc.address_hash,
+            AddressHash::new_from_hex_string("cac32abefbf58ab5878d9fc2d842a40e").unwrap()
+        );
     }
 }
