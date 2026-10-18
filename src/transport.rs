@@ -984,7 +984,7 @@ async fn handle_announce<'a>(
             blocked_until.as_secs(),
         );
     } else {
-        handler.announce_table.add(packet, dest_hash, iface);
+        handler.announce_table.add(packet, dest_hash);
 
         if handler.config.retransmit {
             let transport_id = *handler.config.identity.address_hash();

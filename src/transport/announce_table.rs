@@ -18,7 +18,6 @@ const LOCAL_REBROADCASTS_MAX: u8 = 2;
 pub struct AnnounceEntry {
     pub packet: Packet,
     pub timeout: Instant,
-    pub received_from: AddressHash,
     pub retries: u8,
     pub hops: u8,
     pub response_to_iface: Option<AddressHash>,
@@ -68,7 +67,10 @@ impl AnnounceEntry {
 
         let tx_type = match self.response_to_iface {
             Some(iface) => TxMessageType::Direct(iface),
-            None => TxMessageType::Broadcast(Some(self.received_from)),
+            // broadcast on all interfaces including the one the announce was received
+            // on, as in Python, so that announces are also relayed by single radio
+            // nodes
+            None => TxMessageType::Broadcast(None),
         };
 
         TxMessage { tx_type, packet }
@@ -132,7 +134,6 @@ impl AnnounceTable {
         &mut self,
         announce: &Packet,
         destination: AddressHash,
-        received_from: AddressHash
     ) {
         let now = Instant::now();
         let hops = announce.header.hops + 1;
@@ -140,7 +141,6 @@ impl AnnounceTable {
         let entry = AnnounceEntry {
             packet: *announce,
             timeout: now + Duration::from_secs(60),
-            received_from,
             retries: 5, // TODO: make this configurable too?
             hops,
             response_to_iface: None,
