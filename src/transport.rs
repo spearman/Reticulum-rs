@@ -925,56 +925,79 @@ async fn handle_announce<'a>(
         return;
     }
 
-    if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
-        log::info!(
-            "tp({}): too many announces from {}, blocked for {} seconds",
+    if packet.header.hops as usize >= PATHFINDER_M {
+        log::debug!(
+            "tp({}): dropped announce for {} with {} hops",
             handler.config.name,
             packet.destination,
-            blocked_until.as_secs(),
+            packet.header.hops
         );
         return;
     }
 
-    if let Ok(result) = DestinationAnnounce::validate(packet) {
-        let destination = result.0;
-        let app_data = result.1;
-        let dest_hash = destination.identity.address_hash;
-        let destination = Arc::new(Mutex::new(destination));
+    let Ok((destination, app_data)) = DestinationAnnounce::validate(packet) else {
+        return;
+    };
+    let dest_hash = destination.identity.address_hash;
 
-        if !handler
-            .single_out_destinations
-            .contains_key(&packet.destination)
-        {
-            log::trace!(
-                "tp({}): new announce for {}",
-                handler.config.name,
-                packet.destination
-            );
+    // every copy heard from other nodes may complete a pending retransmission,
+    // even if the announce itself is not new
+    if handler.config.retransmit {
+        handler.announce_table.heard_rebroadcast(&dest_hash, packet.header.hops);
+    }
 
-            handler
-                .single_out_destinations
-                .insert(packet.destination, destination.clone());
-        }
+    if !handler
+        .path_table
+        .handle_announce(packet, packet.transport, iface)
+    {
+        log::trace!(
+            "tp({}): ignored announce for {}, heard before or older",
+            handler.config.name,
+            packet.destination
+        );
+        return;
+    }
 
-        handler.announce_table.add(packet, dest_hash, iface);
+    let destination = Arc::new(Mutex::new(destination));
+
+    if !handler
+        .single_out_destinations
+        .contains_key(&packet.destination)
+    {
+        log::trace!(
+            "tp({}): new announce for {}",
+            handler.config.name,
+            packet.destination
+        );
 
         handler
-            .path_table
-            .handle_announce(packet, packet.transport, iface);
+            .single_out_destinations
+            .insert(packet.destination, destination.clone());
+    }
 
-        let retransmit = handler.config.retransmit;
-        if retransmit {
+    // the rate limit only blocks retransmission, the path is updated anyway
+    if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
+        log::info!(
+            "tp({}): too many announces from {}, not retransmitted for {} seconds",
+            handler.config.name,
+            packet.destination,
+            blocked_until.as_secs(),
+        );
+    } else {
+        handler.announce_table.add(packet, dest_hash, iface);
+
+        if handler.config.retransmit {
             let transport_id = *handler.config.identity.address_hash();
             if let Some(message) = handler.announce_table.new_packet(&dest_hash, &transport_id) {
                 handler.send(message).await;
             }
         }
-
-        let _ = handler.announce_tx.send(AnnounceEvent {
-            destination,
-            app_data: PacketDataBuffer::new_from_slice(app_data),
-        });
     }
+
+    let _ = handler.announce_tx.send(AnnounceEvent {
+        destination,
+        app_data: PacketDataBuffer::new_from_slice(app_data),
+    });
 }
 
 async fn handle_path_request<'a>(

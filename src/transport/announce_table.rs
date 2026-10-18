@@ -9,6 +9,11 @@ use crate::packet::{
     Packet, PacketContext, PacketType, PropagationType
 };
 
+/// Consider retransmission complete if this many copies have been received at the same
+/// hop count. This prevent redundant rebroadcasts on a shared medium when there are
+/// multiple nearby nodes.
+const LOCAL_REBROADCASTS_MAX: u8 = 2;
+
 #[derive(Clone)]
 pub struct AnnounceEntry {
     pub packet: Packet,
@@ -17,6 +22,8 @@ pub struct AnnounceEntry {
     pub retries: u8,
     pub hops: u8,
     pub response_to_iface: Option<AddressHash>,
+    /// How many times this announce has been received at the same number of hops.
+    pub local_rebroadcasts: u8,
 }
 
 impl AnnounceEntry {
@@ -137,6 +144,7 @@ impl AnnounceTable {
             retries: 5, // TODO: make this configurable too?
             hops,
             response_to_iface: None,
+            local_rebroadcasts: 0,
         };
 
         self.map.insert(destination, entry);
@@ -153,6 +161,7 @@ impl AnnounceTable {
         response.hops = hops;
         response.timeout = Instant::now() + Duration::from_secs(60);
         response.response_to_iface = Some(to_iface);
+        response.local_rebroadcasts = 0;
 
         self.responses.insert(destination, response);
     }
@@ -174,6 +183,32 @@ impl AnnounceTable {
         }
 
         false
+    }
+
+    /// Handles an announce for `destination` heard from another node with `hops`,
+    /// as Python's `Transport.inbound` does. This checks for completion if the announce
+    /// has been heard at the same hop count `LOCAL_REBROADCAST_MAX` times, or if the
+    /// rebroadcast hops is equal to `entry.hops + 1` (assumes the announce has
+    /// propagated past our node already).
+    pub fn heard_rebroadcast(&mut self, destination: &AddressHash, hops: u8) {
+        let Some(entry) = self.map.get_mut(destination) else {
+            return;
+        };
+
+        // the entry hops are the hops this node retransmits with
+        let completed = if hops == entry.hops {
+            entry.local_rebroadcasts += 1;
+            entry.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX
+        } else {
+            hops == entry.hops.saturating_add(1)
+        };
+
+        if completed {
+            log::trace!("Announce cache: {} completed, heard rebroadcast", destination);
+            if let Some(announce) = self.map.remove(destination) {
+                self.cache.insert(*destination, announce);
+            }
+        }
     }
 
     pub fn new_packet(
