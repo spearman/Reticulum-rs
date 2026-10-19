@@ -103,6 +103,11 @@ pub struct TransportConfig {
     /// the initial round of announces is over.
     announce_forever: bool,
 
+    /// Multi-hop GROUP messaging: relayed GROUP packets are accepted, and with
+    /// `retransmit` GROUP packets are also relayed to other nodes. Not compatible
+    /// with Python nodes, which drop relayed GROUP packets. Off by default.
+    group_forwarding: bool,
+
     timer_config: TimerConfig,
 }
 
@@ -192,6 +197,7 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            group_forwarding: false,
             timer_config: TimerConfig::default(),
         }
     }
@@ -216,6 +222,11 @@ impl TransportConfig {
         self
     }
 
+    pub fn set_group_forwarding(mut self, group_forwarding: bool) -> Self {
+        self.group_forwarding = group_forwarding;
+        self
+    }
+
     pub fn set_timer_config(mut self, timer_config: TimerConfig) -> Self {
         self.timer_config = timer_config;
         self
@@ -235,6 +246,7 @@ impl Default for TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            group_forwarding: false,
             timer_config: Default::default(),
         }
     }
@@ -929,9 +941,27 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     }
 
     if packet.header.destination_type == DestinationType::Group {
-        // GROUP packets are never transported, so only packets received
-        // directly from the sender are accepted
-        if packet.header.hops > 0 {
+        if handler.config.group_forwarding {
+            // relayed on all interfaces including the one it was received on, so
+            // that single radio nodes relay too; each node relays a packet only
+            // once, since copies already in the packet cache are dropped
+            if handler.config.retransmit && (packet.header.hops as usize) + 1 < PATHFINDER_M {
+                let mut forwarded = *packet;
+                forwarded.header.hops += 1;
+
+                log::trace!(
+                    "tp({}): forwarding GROUP packet {} with {} hops",
+                    handler.config.name,
+                    packet.hash(),
+                    forwarded.header.hops
+                );
+
+                handler.send(TxMessage {
+                    tx_type: TxMessageType::Broadcast(None),
+                    packet: forwarded,
+                }).await;
+            }
+        } else if packet.header.hops > 0 {
             log::debug!(
                 "tp({}): dropped GROUP packet {} with {} hops",
                 handler.config.name,
